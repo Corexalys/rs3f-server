@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+# Copyright (C) 2021 Corexalys.
+#
+# This file is part of rs3f.
+#
+# rs3f is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# rs3f is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with rs3f.  If not, see <https://www.gnu.org/licenses/>.
+from argparse import ArgumentParser
+import os.path
+
+from rs3f_common import get_home_path, get_authorized_keys_path
+
+
+def main():
+    parser = ArgumentParser()
+    parser.add_argument(
+        "container_name",
+        help="A comma-separated list of container names",
+    )
+    parser.add_argument(
+        "user_name",
+        help="A comma-separated list of user names",
+    )
+    args = parser.parse_args()
+
+    containers_to_edit = set()
+    users_to_remove = set()
+
+    for container in args.container_name.split(","):
+        container = container.strip()
+        if not container:
+            continue
+        if not os.path.exists(get_home_path(container)):
+            raise ValueError("Container '{container}' does not exist")
+        containers_to_edit.add(container)
+
+    for user in args.user_name.split(","):
+        user = user.strip()
+        if not user:
+            continue
+        users_to_remove.add(user)
+
+    print(
+        f"This will {len(users_to_remove)} users from {len(containers_to_edit)} containers:"
+    )
+    print("Users:", ", ".join(users_to_remove))
+    print("Containers:", ", ".join(containers_to_edit))
+    print(f"Please type a 'C' for each containers, and a 'U' for each user.")
+    typed_in = input("> ")
+    if typed_in.count("C") != len(containers_to_edit):
+        raise ValueError(
+            "Found {typed_in.count('C')} Cs, expected {len(containers_to_edit)}."
+        )
+    if typed_in.count("U") != len(users_to_remove):
+        raise ValueError(
+            "Found {typed_in.count('U')} Us, expected {len(users_to_remove)}."
+        )
+
+    for container in containers_to_edit:
+        path = get_authorized_keys_path(container)
+        with open(path, "r") as authorized_file:
+            lines = [line for line in authorized_file]
+        line_index = 0
+        found_matching = 0
+        while line_index < len(lines):
+            line = lines[line_index]
+            for user in users_to_remove:
+                if line.strip().endswith(user):
+                    found_matching += 1
+                    lines.pop(line_index)
+                    break
+            else:
+                line_index += 1
+        if found_matching == 0:
+            print(f"Could not find user {user} in container {container} !")
+        with open(path, "w") as authorized_file:
+            authorized_file.write("\n".join(lines))
+
+    print("DONE")
+
+
+if __name__ == "__main__":
+    main()

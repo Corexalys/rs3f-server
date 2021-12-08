@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+# Copyright (C) 2021 Corexalys.
+#
+# This file is part of rs3f.
+#
+# rs3f is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# rs3f is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with rs3f.  If not, see <https://www.gnu.org/licenses/>.
+
+from argparse import ArgumentParser
+import json
+from getpass import getpass
+import os.path
+import pwd
+import re
+import subprocess
+
+from rs3f_common import HOME_DIR, CHROOT_DIR, UIDS_PATH
+
+RE_VALID_USERNAME = re.compile(r"^[a-z_][a-z_0-9]{0,30}$")
+
+# Based on debian's default for user accounts
+UID_START = 1000
+UID_END = 30000
+
+
+def make_dir(path: str, name: str, *, uid: int, gid: int, mode: int) -> str:
+    """Create a directory with a given name, owner and mode, and return it's path."""
+    dir_path = os.path.join(path, name)
+    os.mkdir(dir_path)
+    os.chown(dir_path, uid, gid)
+    os.chmod(dir_path, mode)
+    return dir_path
+
+
+def main():
+    parser = ArgumentParser()
+    parser.add_argument(
+        "container_name", help="A comma-separated list of container names"
+    )
+    args = parser.parse_args()
+
+    to_create = set()
+
+    existing_users = {pw.pw_name for pw in pwd.getpwall()}
+
+    for name in args.container_name.split(","):
+        name = name.strip()
+        if not name:
+            continue
+        if not RE_VALID_USERNAME.match(name):
+            raise ValueError(
+                "Invalid name: expected a name matching the following pattern: [a-z_][a-z0-9_]{0,30}"
+            )
+        if name in existing_users:
+            raise ValueError(
+                f"A user already exists with name '{name}', manually remove it if this is a mistake"
+            )
+        to_create.add(name)
+
+    print(f"This will create {len(to_create)} new containers:")
+    print(", ".join(to_create))
+    print(f"Please type a 'C' for each created containers")
+    typed_in = input("> ")
+    if typed_in.count("C") != len(to_create):
+        raise ValueError("Found {typed_in.count('C')} Cs, expected {len(to_create)}.")
+
+    available_uids = {i for i in range(UID_START, UID_END)}
+    for pw in pwd.getpwall():
+        available_uids.discard(pw.pw_uid)
+
+    if not available_uids:
+        raise RuntimeError("No more available uids!")
+
+    new_container_users: Dict[int, str] = {}
+    for container in to_create:
+        uid = available_uids.pop()
+        home = make_dir(HOME_DIR, name, uid=0, gid=0, mode=0o755)
+        subprocess.run(
+            [
+                "adduser",
+                "--no-create-home",
+                "--home",
+                home,
+                "--disabled-password",
+                "--gecos",
+                f"rs3f container {container}",
+                "--uid",
+                str(uid),
+                "--gid",
+                "999",
+                container,
+            ],
+            check=True,
+        )
+        # SSH configuration
+        ssh_dir = make_dir(home, ".ssh", uid=uid, gid=0, mode=0o700)
+        authorized_keys_path = os.path.join(ssh_dir, "authorized_keys")
+        with open(authorized_keys_path, "w") as keyfile:
+            keyfile.write("")
+        os.chown(authorized_keys_path, uid, 0)
+        os.chmod(authorized_keys_path, 0o600)
+        # Chroot dir
+        jail_dir = make_dir(CHROOT_DIR, name, uid=0, gid=0, mode=0o755)
+        # Gocryptfs root
+        cryptfs_dir = make_dir(jail_dir, "gocryptfs_root", uid=uid, gid=0, mode=0o700)
+
+        new_container_users[uid] = container
+
+    if os.path.exists(UIDS_PATH):
+        with open(UIDS_PATH, "r") as uids:
+            data = json.loads(uids.read())
+    else:
+        data = {}
+    data.update(new_container_users)
+    with open(UIDS_PATH, "w") as uids:
+        uids.write(json.dumps(data))
+
+    print("DONE")
+
+
+if __name__ == "__main__":
+    main()

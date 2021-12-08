@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+# Copyright (C) 2021 Corexalys.
+#
+# This file is part of rs3f.
+#
+# rs3f is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# rs3f is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with rs3f.  If not, see <https://www.gnu.org/licenses/>.
+from argparse import ArgumentParser
+import os
+import re
+import shutil
+
+from rs3f_common import get_home_path, get_authorized_keys_path
+
+RE_PUBLIC_KEY = re.compile(
+    r"(?P<key>ssh-[^\s]+ [a-zA-Z0-9+/]+=*)(?: (?P<username>[^\s]+))?"
+)
+
+
+def main():
+    parser = ArgumentParser()
+    parser.add_argument(
+        "container_name",
+        help="A comma-separated list of container names",
+    )
+    args = parser.parse_args()
+
+    to_add = set()
+
+    for container in args.container_name.split(","):
+        container = container.strip()
+        if not container:
+            continue
+        if not os.path.exists(get_home_path(container)):
+            raise ValueError(f"Container '{container}' does not exist")
+        to_add.add(container)
+
+    print(f"This will add the user to {len(to_add)} containers:")
+    print(", ".join(to_add))
+    print(f"Please type a 'C' for each containers")
+    typed_in = input("> ")
+    if typed_in.count("C") != len(to_add):
+        raise ValueError("Found {typed_in.count('C')} Cs, expected {len(to_add)}.")
+
+    print("Paste here the public key, followed by a username:")
+    key = input("> ").strip()
+    match = RE_PUBLIC_KEY.match(key.strip())
+    if match is None:
+        raise ValueError("Input was not recognized as a public key")
+    if not match["username"]:
+        raise ValueError("A username after the public key is required")
+
+    for container in to_add:
+        path = get_authorized_keys_path(container)
+        with open(path, "a") as authorized_file:
+            authorized_file.write(f"\n{key}")
+
+    print("DONE")
+
+
+if __name__ == "__main__":
+    main()
